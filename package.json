@@ -1,7 +1,7 @@
 {
   "name": "@gitlawb/openclaude",
   "version": "0.7.0",
-  "description": "OpenClaude opens coding-agent workflows to any LLM — OpenAI, Gemini, DeepSeek, Ollama, and 200+ models",
+  "description": "OpenClaude opens coding-agent workflows to any LLM \u2014 OpenAI, Gemini, DeepSeek, Ollama, and 200+ models",
   "type": "module",
   "bin": {
     "openclaude": "./bin/openclaude"
@@ -9,7 +9,8 @@
   "files": [
     "bin/",
     "dist/cli.mjs",
-    "README.md"
+    "README.md",
+    "dist/web.mjs"
   ],
   "scripts": {
     "build": "bun run scripts/build.ts",
@@ -30,8 +31,6 @@
     "profile:code": "bun run profile:init -- --provider ollama --model qwen2.5-coder:7b",
     "dev:fast": "bun run profile:fast && bun run dev:ollama:fast",
     "dev:code": "bun run profile:code && bun run dev:profile",
-    "dev:grpc": "bun run scripts/start-grpc.ts",
-    "dev:grpc:cli": "bun run scripts/grpc-cli.ts",
     "start": "node dist/cli.mjs",
     "web:dev": "bun run --cwd web dev",
     "web:build": "bun run --cwd web build",
@@ -52,7 +51,8 @@
     "doctor:report": "bun run scripts/system-check.ts --out reports/doctor-runtime.json",
     "hardening:check": "bun run smoke && bun run doctor:runtime",
     "hardening:strict": "bun run typecheck && bun run hardening:check",
-    "prepack": "npm run build"
+    "prepack": "npm run build",
+    "build:web": "bun run scripts/build-web.ts"
   },
   "dependencies": {
     "@alcalzone/ansi-tokenize": "0.3.0",
@@ -63,8 +63,6 @@
     "@anthropic-ai/vertex-sdk": "0.14.4",
     "@commander-js/extra-typings": "12.1.0",
     "@growthbook/growthbook": "1.6.5",
-    "@grpc/grpc-js": "^1.14.3",
-    "@grpc/proto-loader": "^0.8.0",
     "@mendable/firecrawl-js": "4.18.1",
     "@modelcontextprotocol/sdk": "1.29.0",
     "@opentelemetry/api": "1.9.1",
