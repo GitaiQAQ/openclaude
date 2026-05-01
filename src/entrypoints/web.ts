@@ -125,41 +125,77 @@ export class OpenClaudeWeb {
     const session = this.sessions.get(key) ?? { messages: [] }
     this.sessions.set(key, session)
 
-    const response = await fetch(`${this.config.baseURL ?? 'https://api.openai.com/v1'}/chat/completions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.config.apiKey}` },
-      body: JSON.stringify({
-        model: this.config.model ?? 'gpt-4o-mini',
-        stream: true,
-        messages: [...session.messages, { role: 'user', content: message }],
-      }),
-    })
-    if (!response.ok || !response.body) throw new Error('Browser chat request failed')
-    const reader = response.body.getReader()
-    const decoder = new TextDecoder()
-    let buf = ''
-    let fullText = ''
-    while (true) {
-      const { value, done } = await reader.read()
-      if (done) break
-      buf += decoder.decode(value, { stream: true })
-      const lines = buf.split('\n')
-      buf = lines.pop() ?? ''
-      for (const l of lines) {
-        const line = l.trim()
-        if (!line.startsWith('data:')) continue
-        const payload = line.slice(5).trim()
-        if (payload === '[DONE]') continue
-        const d = JSON.parse(payload)
-        const text = d.choices?.[0]?.delta?.content
-        if (text) {
-          fullText += text
-          yield { type: 'text', text }
+    const tools = (this.config.tools ?? []).map((tool) => ({
+      type: 'function',
+      function: {
+        name: tool.name,
+        description: tool.description,
+        parameters: z.toJSONSchema(tool.parameters),
+      },
+    }))
+
+    const browserMessages = [...session.messages, { role: 'user', content: message }]
+    const maxTurns = 8
+
+    for (let turn = 0; turn < maxTurns; turn += 1) {
+      const response = await fetch(`${this.config.baseURL ?? 'https://api.openai.com/v1'}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${this.config.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: this.config.model ?? 'gpt-4o-mini',
+          stream: false,
+          messages: browserMessages,
+          ...(this.config.systemPrompt && turn === 0
+            ? { messages: [{ role: 'system', content: this.config.systemPrompt }, ...browserMessages] }
+            : {}),
+          ...(tools.length > 0 ? { tools, tool_choice: 'auto' } : {}),
+        }),
+      })
+
+      if (!response.ok) throw new Error(`Browser chat request failed: ${response.status}`)
+      const data = await response.json() as any
+      const assistant = data.choices?.[0]?.message
+      const toolCalls = assistant?.tool_calls ?? []
+
+      if (toolCalls.length > 0) {
+        browserMessages.push({ role: 'assistant', content: assistant.content ?? '', tool_calls: toolCalls } as any)
+
+        for (const tc of toolCalls) {
+          const toolName = tc.function?.name
+          const args = tc.function?.arguments ? JSON.parse(tc.function.arguments) : {}
+          const tool = (this.config.tools ?? []).find((t) => t.name === toolName)
+          if (!tool) continue
+
+          yield { type: 'tool_start', name: tool.name, args, toolUseId: tc.id }
+          try {
+            const result = await tool.execute(args)
+            yield { type: 'tool_result', name: tool.name, toolUseId: tc.id, output: result, isError: false }
+            browserMessages.push({ role: 'tool', tool_call_id: tc.id, content: result } as any)
+          } catch (error) {
+            const output = error instanceof Error ? error.message : String(error)
+            yield { type: 'tool_result', name: tool.name, toolUseId: tc.id, output, isError: true }
+            browserMessages.push({ role: 'tool', tool_call_id: tc.id, content: output } as any)
+          }
         }
+
+        continue
       }
+
+      const fullText = assistant?.content ?? ''
+      const tokens = fullText.split(/(\s+)/).filter(Boolean)
+      for (const t of tokens) {
+        yield { type: 'text', text: t }
+      }
+
+      session.messages = [...browserMessages, { role: 'assistant', content: fullText }]
+      yield { type: 'done', fullText }
+      return
     }
-    session.messages.push({ role: 'user', content: message }, { role: 'assistant', content: fullText })
-    yield { type: 'done', fullText }
+
+    throw new Error('Browser loop exceeded max turns')
   }
 
   clearSession(sessionId: string) {
