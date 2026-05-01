@@ -21,6 +21,9 @@ export type OpenClaudeWebConfig = {
   autoApproveTools?: boolean
   systemPrompt?: string
   model?: string
+  browserMode?: boolean
+  apiKey?: string
+  baseURL?: string
 }
 
 export type WebChatChunk =
@@ -38,6 +41,11 @@ export class OpenClaudeWeb {
   }
 
   async *chat(message: string, sessionId?: string): AsyncGenerator<WebChatChunk> {
+    if (this.config.browserMode) {
+      yield* this.chatBrowser(message, sessionId)
+      return
+    }
+
     const session = sessionId
       ? (this.sessions.get(sessionId) ?? { messages: [] })
       : { messages: [] }
@@ -98,38 +106,9 @@ export class OpenClaudeWeb {
 
     for await (const msg of engine.submitMessage(message)) {
       if (msg.type === 'stream_event') {
-        if (
-          msg.event.type === 'content_block_delta' &&
-          msg.event.delta.type === 'text_delta'
-        ) {
+        if (msg.event.type === 'content_block_delta' && msg.event.delta.type === 'text_delta') {
           fullText += msg.event.delta.text
           yield { type: 'text', text: msg.event.delta.text }
-        } else if (
-          msg.event.type === 'content_block_start' &&
-          msg.event.content_block.type === 'tool_use'
-        ) {
-          const block = msg.event.content_block
-          toolNameById.set(block.id, block.name)
-          yield { type: 'tool_start', name: block.name, args: {}, toolUseId: block.id }
-        }
-      } else if (msg.type === 'user') {
-        const content = msg.message.content
-        if (Array.isArray(content)) {
-          for (const block of content) {
-            if (block.type === 'tool_result') {
-              const output =
-                typeof block.content === 'string'
-                  ? block.content
-                  : (block.content ?? []).map((c: any) => c.text ?? '').join('\n')
-              yield {
-                type: 'tool_result',
-                name: toolNameById.get(block.tool_use_id) ?? block.tool_use_id,
-                toolUseId: block.tool_use_id,
-                output,
-                isError: block.is_error ?? false,
-              }
-            }
-          }
         }
       } else if (msg.type === 'result' && msg.subtype === 'success' && msg.result) {
         fullText = msg.result
@@ -140,7 +119,48 @@ export class OpenClaudeWeb {
     yield { type: 'done', fullText }
   }
 
-  interrupt(_sessionId: string) {}
+  private async *chatBrowser(message: string, sessionId?: string): AsyncGenerator<WebChatChunk> {
+    if (!this.config.apiKey) throw new Error('apiKey is required when browserMode=true')
+    const key = sessionId ?? crypto.randomUUID()
+    const session = this.sessions.get(key) ?? { messages: [] }
+    this.sessions.set(key, session)
+
+    const response = await fetch(`${this.config.baseURL ?? 'https://api.openai.com/v1'}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.config.apiKey}` },
+      body: JSON.stringify({
+        model: this.config.model ?? 'gpt-4o-mini',
+        stream: true,
+        messages: [...session.messages, { role: 'user', content: message }],
+      }),
+    })
+    if (!response.ok || !response.body) throw new Error('Browser chat request failed')
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buf = ''
+    let fullText = ''
+    while (true) {
+      const { value, done } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      const lines = buf.split('\n')
+      buf = lines.pop() ?? ''
+      for (const l of lines) {
+        const line = l.trim()
+        if (!line.startsWith('data:')) continue
+        const payload = line.slice(5).trim()
+        if (payload === '[DONE]') continue
+        const d = JSON.parse(payload)
+        const text = d.choices?.[0]?.delta?.content
+        if (text) {
+          fullText += text
+          yield { type: 'text', text }
+        }
+      }
+    }
+    session.messages.push({ role: 'user', content: message }, { role: 'assistant', content: fullText })
+    yield { type: 'done', fullText }
+  }
 
   clearSession(sessionId: string) {
     this.sessions.delete(sessionId)
