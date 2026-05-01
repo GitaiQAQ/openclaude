@@ -1,28 +1,51 @@
-import { AsyncLocalStorage } from 'async_hooks'
 import { getCwdState, getOriginalCwd } from '../bootstrap/state.js'
 
-const cwdOverrideStorage = new AsyncLocalStorage<string>()
+type AsyncLocalStorageLike<T> = {
+  run<R>(store: T, callback: () => R): R
+  getStore(): T | undefined
+}
 
-/**
- * Run a function with an overridden working directory for the current async context.
- * All calls to pwd()/getCwd() within the function (and its async descendants) will
- * return the overridden cwd instead of the global one. This enables concurrent
- * agents to each see their own working directory without affecting each other.
- */
+function createAsyncLocalStorage<T>(): AsyncLocalStorageLike<T> {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-implied-eval
+    const req = (0, eval)('require') as ((id: string) => any) | undefined
+    if (req) {
+      const mod = req('async_hooks') as { AsyncLocalStorage?: new () => AsyncLocalStorageLike<T> }
+      if (mod?.AsyncLocalStorage) {
+        return new mod.AsyncLocalStorage()
+      }
+    }
+  } catch {
+    // browser/no-node runtime fallback
+  }
+
+  let current: T | undefined
+  return {
+    run<R>(store: T, callback: () => R): R {
+      const prev = current
+      current = store
+      try {
+        return callback()
+      } finally {
+        current = prev
+      }
+    },
+    getStore(): T | undefined {
+      return current
+    },
+  }
+}
+
+const cwdOverrideStorage = createAsyncLocalStorage<string>()
+
 export function runWithCwdOverride<T>(cwd: string, fn: () => T): T {
   return cwdOverrideStorage.run(cwd, fn)
 }
 
-/**
- * Get the current working directory
- */
 export function pwd(): string {
   return cwdOverrideStorage.getStore() ?? getCwdState()
 }
 
-/**
- * Get the current working directory or the original working directory if the current one is not available
- */
 export function getCwd(): string {
   try {
     return pwd()

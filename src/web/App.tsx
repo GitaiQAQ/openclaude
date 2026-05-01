@@ -1,15 +1,11 @@
-import {
-  AssistantRuntimeProvider,
-  Thread,
-} from '@assistant-ui/react'
-import { useOpenClaudeRuntime } from './runtime.js'
-import type { OpenClaudeWebConfig } from '../entrypoints/web.js'
+import { AssistantRuntimeProvider, ThreadPrimitive } from '@assistant-ui/react'
+import { useOpenClaudeRuntime, type OpenClaudeWebRuntimeConfig } from './runtime.js'
 
-export function OpenClaudeWebApp(props: OpenClaudeWebConfig) {
+export function OpenClaudeWebApp(props: OpenClaudeWebRuntimeConfig) {
   const runtime = useOpenClaudeRuntime(props)
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      <Thread />
+      <ThreadPrimitive.Root />
     </AssistantRuntimeProvider>
   )
 }

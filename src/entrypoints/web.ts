@@ -21,6 +21,9 @@ export type OpenClaudeWebConfig = {
   autoApproveTools?: boolean
   systemPrompt?: string
   model?: string
+  browserMode?: boolean
+  apiKey?: string
+  baseURL?: string
 }
 
 export type WebChatChunk =
@@ -38,6 +41,11 @@ export class OpenClaudeWeb {
   }
 
   async *chat(message: string, sessionId?: string): AsyncGenerator<WebChatChunk> {
+    if (this.config.browserMode) {
+      yield* this.chatBrowser(message, sessionId)
+      return
+    }
+
     const session = sessionId
       ? (this.sessions.get(sessionId) ?? { messages: [] })
       : { messages: [] }
@@ -98,38 +106,9 @@ export class OpenClaudeWeb {
 
     for await (const msg of engine.submitMessage(message)) {
       if (msg.type === 'stream_event') {
-        if (
-          msg.event.type === 'content_block_delta' &&
-          msg.event.delta.type === 'text_delta'
-        ) {
+        if (msg.event.type === 'content_block_delta' && msg.event.delta.type === 'text_delta') {
           fullText += msg.event.delta.text
           yield { type: 'text', text: msg.event.delta.text }
-        } else if (
-          msg.event.type === 'content_block_start' &&
-          msg.event.content_block.type === 'tool_use'
-        ) {
-          const block = msg.event.content_block
-          toolNameById.set(block.id, block.name)
-          yield { type: 'tool_start', name: block.name, args: {}, toolUseId: block.id }
-        }
-      } else if (msg.type === 'user') {
-        const content = msg.message.content
-        if (Array.isArray(content)) {
-          for (const block of content) {
-            if (block.type === 'tool_result') {
-              const output =
-                typeof block.content === 'string'
-                  ? block.content
-                  : (block.content ?? []).map((c: any) => c.text ?? '').join('\n')
-              yield {
-                type: 'tool_result',
-                name: toolNameById.get(block.tool_use_id) ?? block.tool_use_id,
-                toolUseId: block.tool_use_id,
-                output,
-                isError: block.is_error ?? false,
-              }
-            }
-          }
         }
       } else if (msg.type === 'result' && msg.subtype === 'success' && msg.result) {
         fullText = msg.result
@@ -140,7 +119,84 @@ export class OpenClaudeWeb {
     yield { type: 'done', fullText }
   }
 
-  interrupt(_sessionId: string) {}
+  private async *chatBrowser(message: string, sessionId?: string): AsyncGenerator<WebChatChunk> {
+    if (!this.config.apiKey) throw new Error('apiKey is required when browserMode=true')
+    const key = sessionId ?? crypto.randomUUID()
+    const session = this.sessions.get(key) ?? { messages: [] }
+    this.sessions.set(key, session)
+
+    const tools = (this.config.tools ?? []).map((tool) => ({
+      type: 'function',
+      function: {
+        name: tool.name,
+        description: tool.description,
+        parameters: z.toJSONSchema(tool.parameters),
+      },
+    }))
+
+    const browserMessages = [...session.messages, { role: 'user', content: message }]
+    const maxTurns = 8
+
+    for (let turn = 0; turn < maxTurns; turn += 1) {
+      const response = await fetch(`${this.config.baseURL ?? 'https://api.openai.com/v1'}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${this.config.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: this.config.model ?? 'gpt-4o-mini',
+          stream: false,
+          messages: browserMessages,
+          ...(this.config.systemPrompt && turn === 0
+            ? { messages: [{ role: 'system', content: this.config.systemPrompt }, ...browserMessages] }
+            : {}),
+          ...(tools.length > 0 ? { tools, tool_choice: 'auto' } : {}),
+        }),
+      })
+
+      if (!response.ok) throw new Error(`Browser chat request failed: ${response.status}`)
+      const data = await response.json() as any
+      const assistant = data.choices?.[0]?.message
+      const toolCalls = assistant?.tool_calls ?? []
+
+      if (toolCalls.length > 0) {
+        browserMessages.push({ role: 'assistant', content: assistant.content ?? '', tool_calls: toolCalls } as any)
+
+        for (const tc of toolCalls) {
+          const toolName = tc.function?.name
+          const args = tc.function?.arguments ? JSON.parse(tc.function.arguments) : {}
+          const tool = (this.config.tools ?? []).find((t) => t.name === toolName)
+          if (!tool) continue
+
+          yield { type: 'tool_start', name: tool.name, args, toolUseId: tc.id }
+          try {
+            const result = await tool.execute(args)
+            yield { type: 'tool_result', name: tool.name, toolUseId: tc.id, output: result, isError: false }
+            browserMessages.push({ role: 'tool', tool_call_id: tc.id, content: result } as any)
+          } catch (error) {
+            const output = error instanceof Error ? error.message : String(error)
+            yield { type: 'tool_result', name: tool.name, toolUseId: tc.id, output, isError: true }
+            browserMessages.push({ role: 'tool', tool_call_id: tc.id, content: output } as any)
+          }
+        }
+
+        continue
+      }
+
+      const fullText = assistant?.content ?? ''
+      const tokens = fullText.split(/(\s+)/).filter(Boolean)
+      for (const t of tokens) {
+        yield { type: 'text', text: t }
+      }
+
+      session.messages = [...browserMessages, { role: 'assistant', content: fullText }]
+      yield { type: 'done', fullText }
+      return
+    }
+
+    throw new Error('Browser loop exceeded max turns')
+  }
 
   clearSession(sessionId: string) {
     this.sessions.delete(sessionId)

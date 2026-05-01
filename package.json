@@ -1,7 +1,7 @@
 {
   "name": "@gitlawb/openclaude",
   "version": "0.7.0",
-  "description": "OpenClaude opens coding-agent workflows to any LLM \u2014 OpenAI, Gemini, DeepSeek, Ollama, and 200+ models",
+  "description": "OpenClaude opens coding-agent workflows to any LLM — OpenAI, Gemini, DeepSeek, Ollama, and 200+ models",
   "type": "module",
   "bin": {
     "openclaude": "./bin/openclaude"
@@ -61,6 +61,8 @@
     "@anthropic-ai/sandbox-runtime": "0.0.46",
     "@anthropic-ai/sdk": "0.81.0",
     "@anthropic-ai/vertex-sdk": "0.14.4",
+    "@assistant-ui/react": "^0.12.28",
+    "@assistant-ui/styles": "^0.3.7",
     "@commander-js/extra-typings": "12.1.0",
     "@growthbook/growthbook": "1.6.5",
     "@mendable/firecrawl-js": "4.18.1",
